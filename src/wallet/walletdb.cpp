@@ -447,6 +447,7 @@ static DBErrors LoadMinVersion(CWallet* pwallet, DatabaseBatch& batch) EXCLUSIVE
     AssertLockHeld(pwallet->cs_wallet);
     int nMinVersion = 0;
     if (batch.Read(DBKeys::MINVERSION, nMinVersion)) {
+        pwallet->WalletLogPrintf("Wallet file version = %d\n", nMinVersion);
         if (nMinVersion > FEATURE_LATEST)
             return DBErrors::TOO_NEW;
         pwallet->LoadMinVersion(nMinVersion);
@@ -540,7 +541,6 @@ bool HasLegacyRecords(CWallet& wallet, DatabaseBatch& batch)
         std::unique_ptr<DatabaseCursor> cursor = batch.GetNewPrefixCursor(prefix);
         if (!cursor) {
             // Could only happen on a closed db, which means there is an error in the code flow.
-            wallet.WalletLogPrintf("Error getting database cursor for '%s' records", type);
             throw std::runtime_error(strprintf("Error getting database cursor for '%s' records", type));
         }
 
@@ -1156,7 +1156,7 @@ DBErrors WalletBatch::LoadWallet(CWallet* pwallet)
     // Last client version to open this wallet
     int last_client = CLIENT_VERSION;
     bool has_last_client = m_batch->Read(DBKeys::VERSION, last_client);
-    pwallet->WalletLogPrintf("Wallet file version = %d, last client version = %d\n", pwallet->GetVersion(), last_client);
+    if (has_last_client) pwallet->WalletLogPrintf("Last client version = %d\n", last_client);
 
     try {
         if ((result = LoadMinVersion(pwallet, *m_batch)) != DBErrors::LOAD_OK) return result;
@@ -1193,9 +1193,15 @@ DBErrors WalletBatch::LoadWallet(CWallet* pwallet)
 
         // Load decryption keys
         result = std::max(LoadDecryptionKeys(pwallet, *m_batch), result);
-    } catch (...) {
+    } catch (std::runtime_error& e) {
         // Exceptions that can be ignored or treated as non-critical are handled by the individual loading functions.
         // Any uncaught exceptions will be caught here and treated as critical.
+        // Catch std::runtime_error specifically as many functions throw these and they at least have some message that
+        // we can log
+        pwallet->WalletLogPrintf("%s\n", e.what());
+        result = DBErrors::CORRUPT;
+    } catch (...) {
+        // All other exceptions are still problematic, but we can't log them
         result = DBErrors::CORRUPT;
     }
 
@@ -1384,8 +1390,8 @@ std::unique_ptr<WalletDatabase> MakeDatabase(const fs::path& path, const Databas
 
     // BERKELEY_RO can only be opened if require_format was set, which only occurs in migration.
     if (format && format == DatabaseFormat::BERKELEY_RO && (!options.require_format || options.require_format != DatabaseFormat::BERKELEY_RO)) {
-        error = Untranslated(strprintf("Failed to open database path '%s'. The wallet appears to be a Legacy wallet, please use the wallet migration tool (migratewallet RPC).", fs::PathToString(path)));
-        status = DatabaseStatus::FAILED_BAD_FORMAT;
+        error = Untranslated(strprintf("Failed to open database path '%s'. The wallet appears to be a Legacy wallet, please use the wallet migration tool (migratewallet RPC or the GUI option).", fs::PathToString(path)));
+        status = DatabaseStatus::FAILED_LEGACY_DISABLED;
         return nullptr;
     }
 
