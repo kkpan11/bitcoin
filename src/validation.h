@@ -25,7 +25,7 @@
 #include <script/sigcache.h>
 #include <sync.h>
 #include <txdb.h>
-#include <txmempool.h> // For CTxMemPool::cs
+#include <txmempool.h>
 #include <uint256.h>
 #include <util/check.h>
 #include <util/fs.h>
@@ -36,12 +36,12 @@
 #include <versionbits.h>
 
 #include <atomic>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
 #include <set>
 #include <span>
-#include <stdint.h>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -437,7 +437,8 @@ enum DisconnectResult
 class ConnectTrace;
 
 /** @see Chainstate::FlushStateToDisk */
-enum class FlushStateMode {
+inline constexpr std::array FlushStateModeNames{"NONE", "IF_NEEDED", "PERIODIC", "ALWAYS"};
+enum class FlushStateMode: uint8_t {
     NONE,
     IF_NEEDED,
     PERIODIC,
@@ -533,7 +534,7 @@ protected:
     bool m_disabled GUARDED_BY(::cs_main) {false};
 
     //! Cached result of LookupBlockIndex(*m_from_snapshot_blockhash)
-    const CBlockIndex* m_cached_snapshot_base GUARDED_BY(::cs_main) {nullptr};
+    mutable const CBlockIndex* m_cached_snapshot_base GUARDED_BY(::cs_main){nullptr};
 
 public:
     //! Reference to a BlockManager instance which itself is shared across all
@@ -597,7 +598,7 @@ public:
      *
      * nullptr if this chainstate was not created from a snapshot.
      */
-    const CBlockIndex* SnapshotBase() EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    const CBlockIndex* SnapshotBase() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
     /**
      * The set of all CBlockIndex entries that have as much work as our current
@@ -983,7 +984,7 @@ public:
      *
      * By default this only executes fully when using the Regtest chain; see: m_options.check_block_index.
      */
-    void CheckBlockIndex();
+    void CheckBlockIndex() const;
 
     /**
      * Alias for ::cs_main.
@@ -1036,28 +1037,10 @@ public:
     }
 
 
-    /**
-     * In order to efficiently track invalidity of headers, we keep the set of
-     * blocks which we tried to connect and found to be invalid here (ie which
-     * were set to BLOCK_FAILED_VALID since the last restart). We can then
-     * walk this set and check if a new header is a descendant of something in
-     * this set, preventing us from having to walk m_block_index when we try
-     * to connect a bad block and fail.
-     *
-     * While this is more complicated than marking everything which descends
-     * from an invalid block as invalid at the time we discover it to be
-     * invalid, doing so would require walking all of m_block_index to find all
-     * descendants. Since this case should be very rare, keeping track of all
-     * BLOCK_FAILED_VALID blocks in a set should be just fine and work just as
-     * well.
-     *
-     * Because we already walk m_block_index in height-order at startup, we go
-     * ahead and mark descendants of invalid blocks as FAILED_CHILD at that time,
-     * instead of putting things in this set.
-     */
-    std::set<CBlockIndex*> m_failed_blocks;
-
-    /** Best header we've seen so far (used for getheaders queries' starting points). */
+    /** Best header we've seen so far for which the block is not known to be invalid
+        (used, among others, for getheaders queries' starting points).
+        In case of multiple best headers with the same work, it could point to any
+        because CBlockIndexWorkComparator tiebreaker rules are not applied. */
     CBlockIndex* m_best_header GUARDED_BY(::cs_main){nullptr};
 
     //! The total number of bytes available for us to use across all in-memory
@@ -1147,7 +1130,7 @@ public:
     bool IsInitialBlockDownload() const;
 
     /** Guess verification progress (as a fraction between 0.0=genesis and 1.0=current tip). */
-    double GuessVerificationProgress(const CBlockIndex* pindex) const;
+    double GuessVerificationProgress(const CBlockIndex* pindex) const EXCLUSIVE_LOCKS_REQUIRED(GetMutex());
 
     /**
      * Import blocks from an external file
@@ -1349,6 +1332,6 @@ bool DeploymentEnabled(const ChainstateManager& chainman, DEP dep)
 bool IsBIP30Repeat(const CBlockIndex& block_index);
 
 /** Identifies blocks which coinbase output was subsequently overwritten in the UTXO set (see BIP30) */
-bool IsBIP30Unspendable(const CBlockIndex& block_index);
+bool IsBIP30Unspendable(const uint256& block_hash, int block_height);
 
 #endif // BITCOIN_VALIDATION_H

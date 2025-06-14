@@ -1,5 +1,5 @@
 // Copyright (c) 2010 Satoshi Nakamoto
-// Copyright (c) 2009-2022 The Bitcoin Core developers
+// Copyright (c) 2009-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -52,7 +52,7 @@
 #include <validationinterface.h>
 #include <versionbits.h>
 
-#include <stdint.h>
+#include <cstdint>
 
 #include <condition_variable>
 #include <iterator>
@@ -864,7 +864,9 @@ std::optional<int> GetPruneHeight(const BlockManager& blockman, const CChain& ch
 
 static RPCHelpMan pruneblockchain()
 {
-    return RPCHelpMan{"pruneblockchain", "",
+    return RPCHelpMan{"pruneblockchain",
+                "Attempts to delete block and undo data up to a specified height or timestamp, if eligible for pruning.\n"
+                "Requires `-prune` to be enabled at startup. While pruned data may be re-fetched in some cases (e.g., via `getblockfrompeer`), local deletion is irreversible.\n",
                 {
                     {"height", RPCArg::Type::NUM, RPCArg::Optional::NO, "The block height to prune up to. May be set to a discrete height, or to a " + UNIX_EPOCH_TIME + "\n"
             "                  to prune blocks whose block time is at least 2 hours older than the provided timestamp."},
