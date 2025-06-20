@@ -38,6 +38,7 @@
 
 #include <cstddef>
 #include <map>
+#include <optional>
 #include <unordered_map>
 
 namespace kernel {
@@ -989,12 +990,12 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
     return true;
 }
 
-bool BlockManager::ReadBlock(CBlock& block, const FlatFilePos& pos) const
+bool BlockManager::ReadBlock(CBlock& block, const FlatFilePos& pos, const std::optional<uint256>& expected_hash) const
 {
     block.SetNull();
 
     // Open history file to read
-    std::vector<uint8_t> block_data;
+    std::vector<std::byte> block_data;
     if (!ReadRawBlock(block_data, pos)) {
         return false;
     }
@@ -1007,8 +1008,10 @@ bool BlockManager::ReadBlock(CBlock& block, const FlatFilePos& pos) const
         return false;
     }
 
+    const auto block_hash{block.GetHash()};
+
     // Check the header
-    if (!CheckProofOfWork(block.GetHash(), block.nBits, GetConsensus())) {
+    if (!CheckProofOfWork(block_hash, block.nBits, GetConsensus())) {
         LogError("Errors in block header at %s while reading block", pos.ToString());
         return false;
     }
@@ -1019,24 +1022,22 @@ bool BlockManager::ReadBlock(CBlock& block, const FlatFilePos& pos) const
         return false;
     }
 
+    if (expected_hash && block_hash != *expected_hash) {
+        LogError("GetHash() doesn't match index at %s while reading block (%s != %s)",
+                 pos.ToString(), block_hash.ToString(), expected_hash->ToString());
+        return false;
+    }
+
     return true;
 }
 
 bool BlockManager::ReadBlock(CBlock& block, const CBlockIndex& index) const
 {
     const FlatFilePos block_pos{WITH_LOCK(cs_main, return index.GetBlockPos())};
-
-    if (!ReadBlock(block, block_pos)) {
-        return false;
-    }
-    if (block.GetHash() != index.GetBlockHash()) {
-        LogError("GetHash() doesn't match index for %s at %s while reading block", index.ToString(), block_pos.ToString());
-        return false;
-    }
-    return true;
+    return ReadBlock(block, block_pos, index.GetBlockHash());
 }
 
-bool BlockManager::ReadRawBlock(std::vector<uint8_t>& block, const FlatFilePos& pos) const
+bool BlockManager::ReadRawBlock(std::vector<std::byte>& block, const FlatFilePos& pos) const
 {
     if (pos.nPos < STORAGE_HEADER_BYTES) {
         // If nPos is less than STORAGE_HEADER_BYTES, we can't read the header that precedes the block data
@@ -1070,7 +1071,7 @@ bool BlockManager::ReadRawBlock(std::vector<uint8_t>& block, const FlatFilePos& 
         }
 
         block.resize(blk_size); // Zeroing of memory is intentional here
-        filein.read(MakeWritableByteSpan(block));
+        filein.read(block);
     } catch (const std::exception& e) {
         LogError("Read from block file failed: %s for %s while reading raw block", e.what(), pos.ToString());
         return false;
