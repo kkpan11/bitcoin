@@ -100,8 +100,8 @@ static UniValue FinishTransaction(const std::shared_ptr<CWallet> pwallet, const 
     // First fill transaction with our data without signing,
     // so external signers are not asked to sign more than once.
     bool complete;
-    pwallet->FillPSBT(psbtx, complete, SIGHASH_DEFAULT, /*sign=*/false, /*bip32derivs=*/true);
-    const auto err{pwallet->FillPSBT(psbtx, complete, SIGHASH_DEFAULT, /*sign=*/true, /*bip32derivs=*/false)};
+    pwallet->FillPSBT(psbtx, complete, std::nullopt, /*sign=*/false, /*bip32derivs=*/true);
+    const auto err{pwallet->FillPSBT(psbtx, complete, std::nullopt, /*sign=*/true, /*bip32derivs=*/false)};
     if (err) {
         throw JSONRPCPSBTError(*err);
     }
@@ -757,7 +757,10 @@ RPCHelpMan fundrawtransaction()
                 "Note that all inputs selected must be of standard form and P2SH scripts must be\n"
                 "in the wallet using importdescriptors (to calculate fees).\n"
                 "You can see whether this is the case by checking the \"solvable\" field in the listunspent output.\n"
-                "Only pay-to-pubkey, multisig, and P2SH versions thereof are currently supported for watch-only\n",
+                "Only pay-to-pubkey, multisig, and P2SH versions thereof are currently supported for watch-only.\n"
+                "Note that if specifying an exact fee rate, the resulting transaction may have a higher fee rate\n"
+                "if the transaction has unconfirmed inputs. This is because the wallet will attempt to make the\n"
+                "entire package have the given fee rate, not the resulting transaction.\n",
                 {
                     {"hexstring", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The hex string of the raw transaction"},
                     {"options", RPCArg::Type::OBJ_NAMED_PARAMS, RPCArg::Optional::OMITTED, "For backward compatibility: passing in a true instead of an object will result in {\"includeWatching\":true}",
@@ -960,12 +963,15 @@ RPCHelpMan signrawtransactionwithwallet()
     // Parse the prevtxs array
     ParsePrevouts(request.params[1], nullptr, coins);
 
-    int nHashType = ParseSighashString(request.params[2]);
+    std::optional<int> nHashType = ParseSighashString(request.params[2]);
+    if (!nHashType) {
+        nHashType = SIGHASH_DEFAULT;
+    }
 
     // Script verification errors
     std::map<int, bilingual_str> input_errors;
 
-    bool complete = pwallet->SignTransaction(mtx, coins, nHashType, input_errors);
+    bool complete = pwallet->SignTransaction(mtx, coins, *nHashType, input_errors);
     UniValue result(UniValue::VOBJ);
     SignTransactionResultToJSON(mtx, complete, coins, input_errors, result);
     return result;
@@ -1179,7 +1185,7 @@ static RPCHelpMan bumpfee_helper(std::string method_name)
     } else {
         PartiallySignedTransaction psbtx(mtx);
         bool complete = false;
-        const auto err{pwallet->FillPSBT(psbtx, complete, SIGHASH_DEFAULT, /*sign=*/false, /*bip32derivs=*/true)};
+        const auto err{pwallet->FillPSBT(psbtx, complete, std::nullopt, /*sign=*/false, /*bip32derivs=*/true)};
         CHECK_NONFATAL(!err);
         CHECK_NONFATAL(!complete);
         DataStream ssTx{};
@@ -1635,7 +1641,7 @@ RPCHelpMan walletprocesspsbt()
     }
 
     // Get the sighash type
-    int nHashType = ParseSighashString(request.params[2]);
+    std::optional<int> nHashType = ParseSighashString(request.params[2]);
 
     // Fill transaction with our data and also sign
     bool sign = request.params[1].isNull() ? true : request.params[1].get_bool();
@@ -1784,7 +1790,7 @@ RPCHelpMan walletcreatefundedpsbt()
     // Fill transaction with out data but don't sign
     bool bip32derivs = request.params[4].isNull() ? true : request.params[4].get_bool();
     bool complete = true;
-    const auto err{wallet.FillPSBT(psbtx, complete, 1, /*sign=*/false, /*bip32derivs=*/bip32derivs)};
+    const auto err{wallet.FillPSBT(psbtx, complete, std::nullopt, /*sign=*/false, /*bip32derivs=*/bip32derivs)};
     if (err) {
         throw JSONRPCPSBTError(*err);
     }

@@ -69,9 +69,9 @@ class WalletTest(BitcoinTestFramework):
 
         self.generate(self.nodes[0], 1, sync_fun=self.no_op)
 
-        walletinfo = self.nodes[0].getwalletinfo()
-        assert_equal(walletinfo['immature_balance'], 50)
-        assert_equal(walletinfo['balance'], 0)
+        balances = self.nodes[0].getbalances()
+        assert_equal(balances["mine"]["immature"], 50)
+        assert_equal(balances["mine"]["trusted"], 0)
 
         self.sync_all(self.nodes[0:3])
         self.generate(self.nodes[1], COINBASE_MATURITY + 1, sync_fun=lambda: self.sync_all(self.nodes[0:3]))
@@ -118,8 +118,7 @@ class WalletTest(BitcoinTestFramework):
         # but 10 will go to node2 and the rest will go to node0
         balance = self.nodes[0].getbalance()
         assert_equal(set([txout1['value'], txout2['value']]), set([10, balance]))
-        walletinfo = self.nodes[0].getwalletinfo()
-        assert_equal(walletinfo['immature_balance'], 0)
+        assert_equal(self.nodes[0].getbalances()["mine"]["immature"], 0)
 
         # Have node0 mine a block, thus it will collect its own fee.
         self.generate(self.nodes[0], 1, sync_fun=lambda: self.sync_all(self.nodes[0:3]))
@@ -606,7 +605,7 @@ class WalletTest(BitcoinTestFramework):
         # Prevent race of listunspent with outstanding TxAddedToMempool notifications
         self.nodes[0].syncwithvalidationinterfacequeue()
         # Now import the descriptors, make sure we can identify on which descriptor each coin was received.
-        self.nodes[0].createwallet(wallet_name="wo", descriptors=True, disable_private_keys=True)
+        self.nodes[0].createwallet(wallet_name="wo", disable_private_keys=True)
         wo_wallet = self.nodes[0].get_wallet_rpc("wo")
         wo_wallet.importdescriptors([
             {

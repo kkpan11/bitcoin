@@ -27,6 +27,7 @@
 #include <streams.h>
 #include <sync.h>
 #include <txmempool.h>
+#include <undo.h>
 #include <util/any.h>
 #include <util/check.h>
 #include <util/strencodings.h>
@@ -281,6 +282,113 @@ static bool rest_headers(const std::any& context,
     }
 }
 
+/**
+ * Serialize spent outputs as a list of per-transaction CTxOut lists using binary format.
+ */
+static void SerializeBlockUndo(DataStream& stream, const CBlockUndo& block_undo)
+{
+    WriteCompactSize(stream, block_undo.vtxundo.size() + 1);
+    WriteCompactSize(stream, 0); // block_undo.vtxundo doesn't contain coinbase tx
+    for (const CTxUndo& tx_undo : block_undo.vtxundo) {
+        WriteCompactSize(stream, tx_undo.vprevout.size());
+        for (const Coin& coin : tx_undo.vprevout) {
+            coin.out.Serialize(stream);
+        }
+    }
+}
+
+/**
+ * Serialize spent outputs as a list of per-transaction CTxOut lists using JSON format.
+ */
+static void BlockUndoToJSON(const CBlockUndo& block_undo, UniValue& result)
+{
+    result.push_back({UniValue::VARR}); // block_undo.vtxundo doesn't contain coinbase tx
+    for (const CTxUndo& tx_undo : block_undo.vtxundo) {
+        UniValue tx_prevouts(UniValue::VARR);
+        for (const Coin& coin : tx_undo.vprevout) {
+            UniValue prevout(UniValue::VOBJ);
+            prevout.pushKV("value", ValueFromAmount(coin.out.nValue));
+
+            UniValue script_pub_key(UniValue::VOBJ);
+            ScriptToUniv(coin.out.scriptPubKey, /*out=*/script_pub_key, /*include_hex=*/true, /*include_address=*/true);
+            prevout.pushKV("scriptPubKey", std::move(script_pub_key));
+
+            tx_prevouts.push_back(std::move(prevout));
+        }
+        result.push_back(std::move(tx_prevouts));
+    }
+}
+
+static bool rest_spent_txouts(const std::any& context, HTTPRequest* req, const std::string& strURIPart)
+{
+    if (!CheckWarmup(req)) {
+        return false;
+    }
+    std::string param;
+    const RESTResponseFormat rf = ParseDataFormat(param, strURIPart);
+    std::vector<std::string> path = SplitString(param, '/');
+
+    std::string hashStr;
+    if (path.size() == 1) {
+        // path with query parameter: /rest/spenttxouts/<hash>
+        hashStr = path[0];
+    } else {
+        return RESTERR(req, HTTP_BAD_REQUEST, "Invalid URI format. Expected /rest/spenttxouts/<hash>.<ext>");
+    }
+
+    auto hash{uint256::FromHex(hashStr)};
+    if (!hash) {
+        return RESTERR(req, HTTP_BAD_REQUEST, "Invalid hash: " + hashStr);
+    }
+
+    ChainstateManager* chainman = GetChainman(context, req);
+    if (!chainman) {
+        return false;
+    }
+
+    const CBlockIndex* pblockindex = WITH_LOCK(cs_main, return chainman->m_blockman.LookupBlockIndex(*hash));
+    if (!pblockindex) {
+        return RESTERR(req, HTTP_NOT_FOUND, hashStr + " not found");
+    }
+
+    CBlockUndo block_undo;
+    if (pblockindex->nHeight > 0 && !chainman->m_blockman.ReadBlockUndo(block_undo, *pblockindex)) {
+        return RESTERR(req, HTTP_NOT_FOUND, hashStr + " undo not available");
+    }
+
+    switch (rf) {
+    case RESTResponseFormat::BINARY: {
+        DataStream ssSpentResponse{};
+        SerializeBlockUndo(ssSpentResponse, block_undo);
+        req->WriteHeader("Content-Type", "application/octet-stream");
+        req->WriteReply(HTTP_OK, ssSpentResponse);
+        return true;
+    }
+
+    case RESTResponseFormat::HEX: {
+        DataStream ssSpentResponse{};
+        SerializeBlockUndo(ssSpentResponse, block_undo);
+        const std::string strHex{HexStr(ssSpentResponse) + "\n"};
+        req->WriteHeader("Content-Type", "text/plain");
+        req->WriteReply(HTTP_OK, strHex);
+        return true;
+    }
+
+    case RESTResponseFormat::JSON: {
+        UniValue result(UniValue::VARR);
+        BlockUndoToJSON(block_undo, result);
+        std::string strJSON = result.write() + "\n";
+        req->WriteHeader("Content-Type", "application/json");
+        req->WriteReply(HTTP_OK, strJSON);
+        return true;
+    }
+
+    default: {
+        return RESTERR(req, HTTP_NOT_FOUND, "output format not found (available: " + AvailableDataFormatsString() + ")");
+    }
+    }
+}
+
 static bool rest_block(const std::any& context,
                        HTTPRequest* req,
                        const std::string& strURIPart,
@@ -318,7 +426,7 @@ static bool rest_block(const std::any& context,
         pos = pblockindex->GetBlockPos();
     }
 
-    std::vector<uint8_t> block_data{};
+    std::vector<std::byte> block_data{};
     if (!chainman.m_blockman.ReadRawBlock(block_data, pos)) {
         return RESTERR(req, HTTP_NOT_FOUND, hashStr + " not found");
     }
@@ -326,7 +434,7 @@ static bool rest_block(const std::any& context,
     switch (rf) {
     case RESTResponseFormat::BINARY: {
         req->WriteHeader("Content-Type", "application/octet-stream");
-        req->WriteReply(HTTP_OK, std::as_bytes(std::span{block_data}));
+        req->WriteReply(HTTP_OK, block_data);
         return true;
     }
 
@@ -962,9 +1070,9 @@ static bool rest_blockhash_by_height(const std::any& context, HTTPRequest* req,
     std::string height_str;
     const RESTResponseFormat rf = ParseDataFormat(height_str, str_uri_part);
 
-    int32_t blockheight = -1; // Initialization done only to prevent valgrind false positive, see https://github.com/bitcoin/bitcoin/pull/18785
-    if (!ParseInt32(height_str, &blockheight) || blockheight < 0) {
-        return RESTERR(req, HTTP_BAD_REQUEST, "Invalid height: " + SanitizeString(height_str));
+    const auto blockheight{ToIntegral<int32_t>(height_str)};
+    if (!blockheight || *blockheight < 0) {
+        return RESTERR(req, HTTP_BAD_REQUEST, "Invalid height: " + SanitizeString(height_str, SAFE_CHARS_URI));
     }
 
     CBlockIndex* pblockindex = nullptr;
@@ -974,10 +1082,10 @@ static bool rest_blockhash_by_height(const std::any& context, HTTPRequest* req,
         ChainstateManager& chainman = *maybe_chainman;
         LOCK(cs_main);
         const CChain& active_chain = chainman.ActiveChain();
-        if (blockheight > active_chain.Height()) {
+        if (*blockheight > active_chain.Height()) {
             return RESTERR(req, HTTP_NOT_FOUND, "Block height out of range");
         }
-        pblockindex = active_chain[blockheight];
+        pblockindex = active_chain[*blockheight];
     }
     switch (rf) {
     case RESTResponseFormat::BINARY: {
@@ -1021,6 +1129,7 @@ static const struct {
       {"/rest/deploymentinfo/", rest_deploymentinfo},
       {"/rest/deploymentinfo", rest_deploymentinfo},
       {"/rest/blockhashbyheight/", rest_blockhash_by_height},
+      {"/rest/spenttxouts/", rest_spent_txouts},
 };
 
 void StartREST(const std::any& context)
