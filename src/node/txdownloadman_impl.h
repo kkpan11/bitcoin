@@ -1,4 +1,4 @@
-// Copyright (c) 2024
+// Copyright (c) 2024-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #ifndef BITCOIN_NODE_TXDOWNLOADMAN_IMPL_H
@@ -169,7 +169,7 @@ public:
     std::vector<GenTxid> GetRequestsToSend(NodeId nodeid, std::chrono::microseconds current_time);
 
     /** Marks a tx as ReceivedResponse in txrequest. */
-    void ReceivedNotFound(NodeId nodeid, const std::vector<uint256>& txhashes);
+    void ReceivedNotFound(NodeId nodeid, const std::vector<GenTxid>& gtxids);
 
     /** Look for a child of this transaction in the orphanage to form a 1-parent-1-child package,
      * skipping any combinations that have already been tried. Return the resulting package along with
